@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.cache/
+.DS_Store
+
+# build / packaging artifacts
+build/
+dist/
+bdist*/
+lib/
+*.egg-info/
