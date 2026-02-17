@@ -3,13 +3,13 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, Optional, List
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi import FastAPI, Query
+from fastapi.responses import HTMLResponse, PlainTextResponse, JSONResponse
 
 from polysignal.analysis import analyze_market
 
-# Change this on each deploy to confirm Vercel is running the latest code.
-APP_REV = "vercel-fastapi-rev-001"
+# bump this string if you ever want to confirm which version is deployed
+APP_REV = "vercel-fastapi-rev-002"
 
 app = FastAPI(
     title="Polysignal",
@@ -42,7 +42,6 @@ async def _run_analysis(
     timeout_s: float,
     debug: bool,
 ) -> Dict[str, Any]:
-    # Writable location on Vercel is /tmp
     cache_dir = os.getenv("POLYSIGNAL_CACHE_DIR", "/tmp/polysignal-cache")
     use_cache = _bool_env("POLYSIGNAL_USE_CACHE", True)
     clear_cache = _bool_env("POLYSIGNAL_CLEAR_CACHE", False)
@@ -70,7 +69,67 @@ async def _run_analysis(
     )
 
 
+def _format_implied(market: Dict[str, Any]) -> str:
+    """
+    market_probs sometimes comes back as:
+      - dict: {"Yes": 0.42, "No": 0.58}
+      - list: [0.42, 0.58] with market["outcomes"] = ["Yes","No"]
+      - list[dict]: [{"outcome":"Yes","prob":0.42}, ...]
+    """
+    probs = market.get("market_probs")
+    if probs is None:
+        # fallback: some responses carry outcomePrices
+        outcomes = market.get("outcomes")
+        outcome_prices = market.get("outcomePrices")
+        if isinstance(outcomes, list) and isinstance(outcome_prices, list) and len(outcomes) == len(outcome_prices):
+            try:
+                return " | ".join(f"{o}: {float(p):.2f}" for o, p in zip(outcomes, outcome_prices))
+            except Exception:
+                return "-"
+        return "-"
+
+    # dict case
+    if isinstance(probs, dict):
+        try:
+            return " | ".join(f"{k}: {float(v):.2f}" for k, v in probs.items())
+        except Exception:
+            return str(probs)
+
+    # list case
+    if isinstance(probs, list):
+        outcomes = market.get("outcomes")
+
+        # list[float] + outcomes
+        if isinstance(outcomes, list) and len(outcomes) == len(probs):
+            try:
+                return " | ".join(f"{o}: {float(p):.2f}" for o, p in zip(outcomes, probs))
+            except Exception:
+                pass
+
+        # list[dict] case
+        if probs and isinstance(probs[0], dict):
+            parts: List[str] = []
+            for d in probs:
+                if not isinstance(d, dict):
+                    continue
+                o = d.get("outcome") or d.get("label") or d.get("name")
+                p = d.get("prob") or d.get("p") or d.get("value") or d.get("price")
+                if o is None or p is None:
+                    continue
+                try:
+                    parts.append(f"{o}: {float(p):.2f}")
+                except Exception:
+                    continue
+            if parts:
+                return " | ".join(parts)
+
+        return str(probs)
+
+    return str(probs)
+
+
 def _format_cli_like(result: Dict[str, Any], top_n: int = 10) -> str:
+    # event selection
     if result.get("needs_selection"):
         ev = result.get("event", {}) or {}
         lines: List[str] = []
@@ -86,13 +145,12 @@ def _format_cli_like(result: Dict[str, Any], top_n: int = 10) -> str:
     market = result.get("market", {}) or {}
     diag = result.get("diagnostics", {}) or {}
     dist = result.get("dist") or {}
+    rows = result.get("rows") or []
 
     lines: List[str] = []
     lines.append("Polysignal")
     lines.append(f"Question: {market.get('question') or '-'}")
-    probs = market.get("market_probs") or {}
-    if probs:
-        lines.append("Market implied: " + " | ".join(f"{k}: {float(v):.2f}" for k, v in probs.items()))
+    lines.append(f"Market implied: {_format_implied(market)}")
     lines.append("")
     lines.append(f"Recommendation: {result.get('recommendation')} (confidence {float(result.get('confidence') or 0.0):.1f}/10)")
     lines.append(f"Qualified wallets: {result.get('n_wallets_qualified', 0)} / considered: {result.get('n_wallets_considered', 0)}")
@@ -106,7 +164,6 @@ def _format_cli_like(result: Dict[str, Any], top_n: int = 10) -> str:
         for k, v in sorted(dist.items(), key=lambda kv: kv[1], reverse=True):
             lines.append(f"  {k}: {float(v) * 100:.2f}%")
 
-    rows = result.get("rows") or []
     if rows:
         lines.append("")
         lines.append(f"Top wallets (top {min(top_n, len(rows))} by weight)")
@@ -213,7 +270,7 @@ async def analyze(
     concurrency: int = Query(8, ge=1, le=50),
     timeout_s: float = Query(25.0, ge=1.0, le=120.0),
     debug: bool = Query(False),
-) -> Dict[str, Any]:
+) -> Any:
     try:
         return await _run_analysis(
             url=url,
@@ -232,9 +289,9 @@ async def analyze(
             debug=bool(debug),
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        return JSONResponse({"detail": str(e)}, status_code=400)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=(str(e) if debug else "Internal error")) from e
+        return JSONResponse({"detail": (str(e) if debug else "Internal error")}, status_code=500)
 
 
 @app.get("/api/cli", response_class=PlainTextResponse)
@@ -253,7 +310,7 @@ async def cli(
     concurrency: int = Query(8, ge=1, le=50),
     timeout_s: float = Query(25.0, ge=1.0, le=120.0),
     debug: bool = Query(False),
-) -> str:
+) -> Any:
     try:
         result = await _run_analysis(
             url=url,
@@ -273,6 +330,7 @@ async def cli(
         )
         return _format_cli_like(result)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        return PlainTextResponse(f"ERROR (400): {e}", status_code=400)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=(str(e) if debug else "Internal error")) from e
+        msg = str(e) if debug else "Internal error"
+        return PlainTextResponse(f"ERROR (500): {msg}", status_code=500)
