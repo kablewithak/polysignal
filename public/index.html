@@ -1,0 +1,88 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Polysignal</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; max-width: 980px; }
+      input { padding: 10px; font-size: 14px; width: 100%; max-width: 860px; }
+      button { padding: 10px 14px; font-size: 14px; margin-top: 12px; cursor: pointer; }
+      pre { background: #0b0f14; color: #e6edf3; padding: 14px; border-radius: 10px; overflow: auto; min-height: 180px; }
+      .hint { color: #57606a; font-size: 13px; margin-top: 6px; }
+      .row { margin-top: 12px; }
+      label { font-weight: 600; display: block; margin-bottom: 6px; }
+      .small { width: 220px; }
+      .grid { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; }
+      a { color: inherit; }
+    </style>
+  </head>
+  <body>
+    <h1>Polysignal</h1>
+    <p class="hint">
+      Paste a Polymarket event/market URL → get CLI-style output.
+      (<a href="/api/docs" target="_blank" rel="noreferrer">API docs</a>)
+    </p>
+
+    <div class="row">
+      <label>Polymarket URL</label>
+      <input id="url" placeholder="https://polymarket.com/event/..." />
+      <div class="hint">If you paste an event with multiple markets, also set market index.</div>
+    </div>
+
+    <div class="row grid">
+      <div>
+        <label>Market index (optional)</label>
+        <input id="market_index" class="small" type="number" min="0" placeholder="e.g. 2" />
+      </div>
+      <div>
+        <label>min_profit</label>
+        <input id="min_profit" class="small" type="number" min="0" value="5000" />
+      </div>
+      <div>
+        <label>debug</label>
+        <input id="debug" type="checkbox" />
+      </div>
+      <div>
+        <button id="run">Analyze</button>
+      </div>
+    </div>
+
+    <h2>Output</h2>
+    <pre id="out">Ready. Paste a link and click Analyze.</pre>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+
+      $("run").addEventListener("click", async () => {
+        const url = $("url").value.trim();
+        const marketIndex = $("market_index").value.trim();
+        const minProfit = $("min_profit").value.trim();
+        const debug = $("debug").checked;
+
+        if (!url) {
+          $("out").textContent = "Please paste a Polymarket URL.";
+          return;
+        }
+
+        const params = new URLSearchParams();
+        params.set("url", url);
+        if (marketIndex) params.set("market_index", marketIndex);
+        if (minProfit) params.set("min_profit", minProfit);
+        if (debug) params.set("debug", "true");
+
+        const endpoint = "/api/cli?" + params.toString();
+
+        $("out").textContent = "Running...\n" + endpoint;
+
+        try {
+          const res = await fetch(endpoint);
+          const text = await res.text();
+          $("out").textContent = text;
+        } catch (e) {
+          $("out").textContent = "Request failed: " + String(e);
+        }
+      });
+    </script>
+  </body>
+</html>
