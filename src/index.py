@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, JSONResponse
 from polysignal.analysis import analyze_market
 
 # bump this string if you ever want to confirm which version is deployed
-APP_REV = "vercel-fastapi-rev-003"
+APP_REV = "vercel-fastapi-rev-005"
 
 app = FastAPI(
     title="Polysignal",
@@ -78,7 +78,6 @@ def _format_implied(market: Dict[str, Any]) -> str:
     """
     probs = market.get("market_probs")
     if probs is None:
-        # fallback: some responses carry outcomePrices
         outcomes = market.get("outcomes")
         outcome_prices = market.get("outcomePrices")
         if isinstance(outcomes, list) and isinstance(outcome_prices, list) and len(outcomes) == len(outcome_prices):
@@ -88,25 +87,21 @@ def _format_implied(market: Dict[str, Any]) -> str:
                 return "-"
         return "-"
 
-    # dict case
     if isinstance(probs, dict):
         try:
             return " | ".join(f"{k}: {float(v):.2f}" for k, v in probs.items())
         except Exception:
             return str(probs)
 
-    # list case
     if isinstance(probs, list):
         outcomes = market.get("outcomes")
 
-        # list[float] + outcomes
         if isinstance(outcomes, list) and len(outcomes) == len(probs):
             try:
                 return " | ".join(f"{o}: {float(p):.2f}" for o, p in zip(outcomes, probs))
             except Exception:
                 pass
 
-        # list[dict] case
         if probs and isinstance(probs[0], dict):
             parts: List[str] = []
             for d in probs:
@@ -129,7 +124,6 @@ def _format_implied(market: Dict[str, Any]) -> str:
 
 
 def _format_cli_like(result: Dict[str, Any], top_n: int = 10) -> str:
-    # event selection
     if result.get("needs_selection"):
         ev = result.get("event", {}) or {}
         lines: List[str] = []
@@ -162,81 +156,127 @@ def _format_cli_like(result: Dict[str, Any], top_n: int = 10) -> str:
     if isinstance(diag, dict) and diag.get("gate"):
         lines.append(f"Gate: {diag.get('gate')}")
 
-    if dist:
+    if dist and isinstance(dist, dict):
         lines.append("")
         lines.append("Smart-money weighted stance:")
         for k, v in sorted(dist.items(), key=lambda kv: kv[1], reverse=True):
             lines.append(f"  {k}: {float(v) * 100:.2f}%")
 
     if rows:
-        lines.append("")
-        lines.append(f"Top wallets (top {min(top_n, len(rows))} by weight)")
-
         def g(r: Dict[str, Any], *keys: str, default=None):
             for k in keys:
                 if k in r and r[k] is not None:
                     return r[k]
             return default
 
-        # Keep widths reasonable but include the columns you want (when present)
-        lines.append(
-            "addr                               pnl_all   src  outcome  mkt_value  win%  n   closed  days  conv   weight"
+        def cell(val: Any, width: int, align_left: bool = False) -> str:
+            s = "" if val is None else str(val)
+            if len(s) > width:
+                s = s[:width]
+            return s.ljust(width) if align_left else s.rjust(width)
+
+        # Fixed widths (tuned for your observed values)
+        W_ADDR = 42
+        W_PNL = 10
+        W_SRC = 3
+        W_OUT = 7
+        W_MKT = 9
+        W_WIN = 5
+        W_N = 4
+        W_CLOSED = 6
+        W_DAYS = 4
+        W_CONV = 6
+        W_WEIGHT = 10
+
+        lines.append("")
+        lines.append(f"Top wallets (top {min(top_n, len(rows))} by weight)")
+
+        header = (
+            f"{cell('addr', W_ADDR, True)} "
+            f"{cell('pnl_all', W_PNL, True)} "
+            f"{cell('src', W_SRC, True)} "
+            f"{cell('outcome', W_OUT, True)} "
+            f"{cell('mkt_value', W_MKT, True)} "
+            f"{cell('win%', W_WIN, True)} "
+            f"{cell('n', W_N, True)} "
+            f"{cell('closed', W_CLOSED, True)} "
+            f"{cell('days', W_DAYS, True)} "
+            f"{cell('conv', W_CONV, True)} "
+            f"{cell('weight', W_WEIGHT, True)}"
         )
-        lines.append("-" * 120)
+        lines.append(header)
+        lines.append("-" * len(header))
 
         for r0 in rows[:top_n]:
             r = r0 or {}
 
-            addr = str(g(r, "addr", "wallet", default=""))[:34].ljust(34)
+            addr_raw = str(g(r, "addr", "wallet", default=""))
+            addr = cell(addr_raw, W_ADDR, True)
 
-            outcome = str(g(r, "outcome", "side", default="-"))[:7].ljust(7)
-
-            # PnL display: only show numeric if we know it's safe/known.
             pnl_all_known = bool(g(r, "pnl_all_known", default=False))
             pnl_all_val = g(r, "pnl_all", "pnl", "pnl_all_time", default=None)
             if pnl_all_known and pnl_all_val is not None:
                 try:
-                    pnl_all = f"{float(pnl_all_val):,.0f}".rjust(8)
+                    pnl_all = cell(f"{float(pnl_all_val):,.0f}", W_PNL, False)
                 except Exception:
-                    pnl_all = "   —   ".rjust(8)
+                    pnl_all = cell("—", W_PNL, False)
             else:
-                pnl_all = "   —   ".rjust(8)
+                pnl_all = cell("—", W_PNL, False)
 
-            pnl_src = str(g(r, "pnl_src", default="UNK")).rjust(4)
+            src = cell(str(g(r, "pnl_src", default="UNK")), W_SRC, False)
 
-            mkt_value = f"{float(g(r, 'market_value', 'mkt_value', default=0.0)):.0f}".rjust(8)
+            outcome = cell(str(g(r, "outcome", "side", default="-")), W_OUT, True)
+
+            try:
+                mkt_value = cell(f"{float(g(r, 'market_value', 'mkt_value', default=0.0)):.0f}", W_MKT, False)
+            except Exception:
+                mkt_value = cell("-", W_MKT, False)
 
             win_rate = g(r, "win_rate", "wr", default=None)
             if win_rate is not None:
                 try:
-                    win_s = f"{float(win_rate) * 100:.0f}%".rjust(4)
+                    win = cell(f"{float(win_rate) * 100:.0f}%", W_WIN, False)
                 except Exception:
-                    win_s = "  - ".rjust(4)
+                    win = cell("-", W_WIN, False)
             else:
-                win_s = "  - ".rjust(4)
+                win = cell("-", W_WIN, False)
 
             wr_n = g(r, "wr_n", "win_n", default=None)
-            wr_n_s = (f"{int(wr_n)}".rjust(3) if wr_n is not None else "  -")
+            try:
+                n = cell(str(int(wr_n)), W_N, False) if wr_n is not None else cell("-", W_N, False)
+            except Exception:
+                n = cell("-", W_N, False)
 
-            closed = g(r, "closed_scanned", "closed", default=None)
-            closed_s = (f"{int(closed)}".rjust(6) if closed is not None else "     -")
+            closed_val = g(r, "closed_scanned", "closed", default=None)
+            try:
+                closed = cell(str(int(closed_val)), W_CLOSED, False) if closed_val is not None else cell("-", W_CLOSED, False)
+            except Exception:
+                closed = cell("-", W_CLOSED, False)
 
-            days = g(r, "days_since_active", "days", default=None)
-            days_s = (f"{float(days):.0f}".rjust(4) if days is not None else "   -")
+            # IMPORTANT: days is the small integer column (1, 6, 0, ...)
+            days_val = g(r, "days", "days_since_active", default=None)
+            try:
+                days = cell(str(int(days_val)), W_DAYS, False) if days_val is not None else cell("-", W_DAYS, False)
+            except Exception:
+                days = cell("-", W_DAYS, False)
 
-            conv = g(r, "conviction_ratio", "conv", default=None)
-            if conv is not None:
+            # IMPORTANT: conv is the decimal column (16.09, 0.34, ...)
+            conv_val = g(r, "conv", "conviction_ratio", default=None)
+            if conv_val is not None:
                 try:
-                    conv_s = f"{float(conv):.2f}".rjust(5)
+                    conv = cell(f"{float(conv_val):.2f}", W_CONV, False)
                 except Exception:
-                    conv_s = "  -  ".rjust(5)
+                    conv = cell("-", W_CONV, False)
             else:
-                conv_s = "  -  ".rjust(5)
+                conv = cell("-", W_CONV, False)
 
-            weight = f"{float(g(r, 'weight', default=0.0)):.4f}".rjust(7)
+            try:
+                weight = cell(f"{float(g(r, 'weight', default=0.0)):.4f}", W_WEIGHT, False)
+            except Exception:
+                weight = cell("-", W_WEIGHT, False)
 
             lines.append(
-                f"{addr} {pnl_all} {pnl_src}  {outcome} {mkt_value}  {win_s} {wr_n_s} {closed_s} {days_s} {conv_s} {weight}"
+                f"{addr} {pnl_all} {src} {outcome} {mkt_value} {win} {n} {closed} {days} {conv} {weight}"
             )
 
         lines.append("")
@@ -259,7 +299,17 @@ async def home() -> str:
       body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 32px; }
       input { width: 720px; padding: 10px; }
       button { padding: 10px 14px; margin-left: 8px; }
-      pre { margin-top: 18px; padding: 14px; background: #111; color: #eee; overflow-x: auto; }
+      pre {
+        margin-top: 18px;
+        padding: 14px;
+        background: #111;
+        color: #eee;
+        overflow-x: auto;
+        white-space: pre; /* do NOT wrap */
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        font-size: 13px;
+        line-height: 1.25;
+      }
       .row { margin-top: 10px; }
       a { color: #2563eb; }
       .small { width: 160px; }
