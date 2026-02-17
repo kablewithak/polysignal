@@ -3,7 +3,7 @@
   "functions": {
     "src/index.py": {
       "maxDuration": 60,
-      "excludeFiles": "{tests/**,**/__pycache__/**,**/*.pyc,**/.pytest_cache/**,.venv/**,dist/**,build/**,artifacts/**}"
+      "excludeFiles": "{tests/**,__tests__/**,**/*.test.py,**/test_*.py,fixtures/**,__fixtures__/**,testdata/**,sample-data/**,.venv/**,.pytest_cache/**,**/__pycache__/**,**/*.pyc,dist/**,build/**}"
     }
   }
 }
