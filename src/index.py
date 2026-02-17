@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, JSONResponse
 from polysignal.analysis import analyze_market
 
 # bump this string if you ever want to confirm which version is deployed
-APP_REV = "vercel-fastapi-rev-002"
+APP_REV = "vercel-fastapi-rev-003"
 
 app = FastAPI(
     title="Polysignal",
@@ -152,8 +152,12 @@ def _format_cli_like(result: Dict[str, Any], top_n: int = 10) -> str:
     lines.append(f"Question: {market.get('question') or '-'}")
     lines.append(f"Market implied: {_format_implied(market)}")
     lines.append("")
-    lines.append(f"Recommendation: {result.get('recommendation')} (confidence {float(result.get('confidence') or 0.0):.1f}/10)")
-    lines.append(f"Qualified wallets: {result.get('n_wallets_qualified', 0)} / considered: {result.get('n_wallets_considered', 0)}")
+    lines.append(
+        f"Recommendation: {result.get('recommendation')} (confidence {float(result.get('confidence') or 0.0):.1f}/10)"
+    )
+    lines.append(
+        f"Qualified wallets: {result.get('n_wallets_qualified', 0)} / considered: {result.get('n_wallets_considered', 0)}"
+    )
 
     if isinstance(diag, dict) and diag.get("gate"):
         lines.append(f"Gate: {diag.get('gate')}")
@@ -167,14 +171,76 @@ def _format_cli_like(result: Dict[str, Any], top_n: int = 10) -> str:
     if rows:
         lines.append("")
         lines.append(f"Top wallets (top {min(top_n, len(rows))} by weight)")
-        lines.append("addr                               outcome  weight   mkt_value")
-        lines.append("-" * 78)
-        for r in rows[:top_n]:
-            addr = str((r or {}).get("addr", ""))[:34].ljust(34)
-            outcome = str((r or {}).get("outcome", "-"))[:7].ljust(7)
-            weight = f"{float((r or {}).get('weight', 0.0)):.4f}".rjust(7)
-            mkt_value = f"{float((r or {}).get('market_value', 0.0)):.0f}".rjust(8)
-            lines.append(f"{addr}  {outcome}  {weight}  {mkt_value}")
+
+        def g(r: Dict[str, Any], *keys: str, default=None):
+            for k in keys:
+                if k in r and r[k] is not None:
+                    return r[k]
+            return default
+
+        # Keep widths reasonable but include the columns you want (when present)
+        lines.append(
+            "addr                               pnl_all   src  outcome  mkt_value  win%  n   closed  days  conv   weight"
+        )
+        lines.append("-" * 120)
+
+        for r0 in rows[:top_n]:
+            r = r0 or {}
+
+            addr = str(g(r, "addr", "wallet", default=""))[:34].ljust(34)
+
+            outcome = str(g(r, "outcome", "side", default="-"))[:7].ljust(7)
+
+            # PnL display: only show numeric if we know it's safe/known.
+            pnl_all_known = bool(g(r, "pnl_all_known", default=False))
+            pnl_all_val = g(r, "pnl_all", "pnl", "pnl_all_time", default=None)
+            if pnl_all_known and pnl_all_val is not None:
+                try:
+                    pnl_all = f"{float(pnl_all_val):,.0f}".rjust(8)
+                except Exception:
+                    pnl_all = "   —   ".rjust(8)
+            else:
+                pnl_all = "   —   ".rjust(8)
+
+            pnl_src = str(g(r, "pnl_src", default="UNK")).rjust(4)
+
+            mkt_value = f"{float(g(r, 'market_value', 'mkt_value', default=0.0)):.0f}".rjust(8)
+
+            win_rate = g(r, "win_rate", "wr", default=None)
+            if win_rate is not None:
+                try:
+                    win_s = f"{float(win_rate) * 100:.0f}%".rjust(4)
+                except Exception:
+                    win_s = "  - ".rjust(4)
+            else:
+                win_s = "  - ".rjust(4)
+
+            wr_n = g(r, "wr_n", "win_n", default=None)
+            wr_n_s = (f"{int(wr_n)}".rjust(3) if wr_n is not None else "  -")
+
+            closed = g(r, "closed_scanned", "closed", default=None)
+            closed_s = (f"{int(closed)}".rjust(6) if closed is not None else "     -")
+
+            days = g(r, "days_since_active", "days", default=None)
+            days_s = (f"{float(days):.0f}".rjust(4) if days is not None else "   -")
+
+            conv = g(r, "conviction_ratio", "conv", default=None)
+            if conv is not None:
+                try:
+                    conv_s = f"{float(conv):.2f}".rjust(5)
+                except Exception:
+                    conv_s = "  -  ".rjust(5)
+            else:
+                conv_s = "  -  ".rjust(5)
+
+            weight = f"{float(g(r, 'weight', default=0.0)):.4f}".rjust(7)
+
+            lines.append(
+                f"{addr} {pnl_all} {pnl_src}  {outcome} {mkt_value}  {win_s} {wr_n_s} {closed_s} {days_s} {conv_s} {weight}"
+            )
+
+        lines.append("")
+        lines.append("PnL tags: [LB]=leaderboard all-time, [REC]=sum scanned closes, UNK=unknown")
 
     lines.append("")
     lines.append("Tip: /docs for API docs. Use debug=true to see full error messages.")
