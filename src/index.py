@@ -8,6 +8,9 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from polysignal.analysis import analyze_market
 
+# Change this on each deploy to confirm Vercel is running the latest code.
+APP_REV = "vercel-fastapi-rev-001"
+
 app = FastAPI(
     title="Polysignal",
     version="0.1",
@@ -22,86 +25,6 @@ def _bool_env(name: str, default: bool) -> bool:
     return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
-def _format_cli_like(result: Dict[str, Any], top_n: int = 10) -> str:
-    # Event-selection case
-    if result.get("needs_selection"):
-        ev = result.get("event", {}) or {}
-        lines: List[str] = []
-        lines.append(f"EVENT: {ev.get('title') or '-'}")
-        lines.append(f"slug={ev.get('slug') or '-'} id={ev.get('id') or '-'}")
-        lines.append("")
-        lines.append("Markets in this event (pick one):")
-        for m in result.get("event_markets") or []:
-            lines.append(f"  [{m.get('index')}] {m.get('question')}  (slug: {m.get('slug')})")
-        lines.append("")
-        lines.append("Re-run with market_index=<N> (or all=true).")
-        return "\n".join(lines)
-
-    # All-markets case
-    if result.get("all_markets") is True:
-        ev = result.get("event", {}) or {}
-        chunks: List[str] = []
-        chunks.append(f"EVENT (ALL MARKETS): {ev.get('title') or '-'}  slug={ev.get('slug') or '-'}")
-        chunks.append("")
-        for i, r in enumerate(result.get("results") or []):
-            m = (r or {}).get("market", {}) or {}
-            chunks.append(f"=== Market #{i} ===")
-            chunks.append(f"Question: {m.get('question') or m.get('slug') or '-'}")
-            chunks.append(f"Recommendation: {r.get('recommendation')} (confidence {float(r.get('confidence') or 0.0):.1f}/10)")
-            dist = r.get("dist") or {}
-            if dist:
-                chunks.append(f"Weighted stance: {dist}")
-            chunks.append("")
-        return "\n".join(chunks).rstrip()
-
-    market = result.get("market", {}) or {}
-    rec = result.get("recommendation")
-    conf = float(result.get("confidence") or 0.0)
-    dist = result.get("dist") or {}
-    rows = result.get("rows") or []
-    diag = result.get("diagnostics") or {}
-
-    probs = market.get("market_probs") or {}
-    implied = " | ".join([f"{k}: {float(v):.2f}" for k, v in probs.items()]) if probs else "-"
-
-    lines: List[str] = []
-    lines.append("Polysignal")
-    lines.append(f"Question: {market.get('question') or '-'}")
-    lines.append(f"Market implied: {implied}")
-    lines.append("")
-    lines.append(f"Recommendation: {rec} (confidence {conf:.1f}/10)")
-    lines.append(f"Qualified wallets: {result.get('n_wallets_qualified', 0)} / considered: {result.get('n_wallets_considered', 0)}")
-
-    gate = diag.get("gate") if isinstance(diag, dict) else None
-    if gate:
-        lines.append(f"Gate: {gate}")
-
-    if dist:
-        lines.append("")
-        lines.append("Smart-money weighted stance:")
-        for k, v in sorted(dist.items(), key=lambda kv: kv[1], reverse=True):
-            lines.append(f"  {k}: {float(v) * 100:.2f}%")
-
-    if rows:
-        lines.append("")
-        lines.append(f"Top wallets (top {min(top_n, len(rows))} by weight)")
-        lines.append("addr                               outcome  weight   mkt_value")
-        lines.append("-" * 78)
-        for r in rows[:top_n]:
-            addr = str((r or {}).get("addr", ""))[:34].ljust(34)
-            outcome = str((r or {}).get("outcome", "-"))[:7].ljust(7)
-            weight = f"{float((r or {}).get('weight', 0.0)):.4f}".rjust(7)
-            mkt_value = f"{float((r or {}).get('market_value', 0.0)):.0f}".rjust(8)
-            lines.append(f"{addr}  {outcome}  {weight}  {mkt_value}")
-
-    lines.append("")
-    lines.append("Tip: open /docs for interactive API docs.")
-    return "\n".join(lines)
-
-
-# -------------------------
-# IMPORTANT: internal runner
-# -------------------------
 async def _run_analysis(
     *,
     url: str,
@@ -119,6 +42,7 @@ async def _run_analysis(
     timeout_s: float,
     debug: bool,
 ) -> Dict[str, Any]:
+    # Writable location on Vercel is /tmp
     cache_dir = os.getenv("POLYSIGNAL_CACHE_DIR", "/tmp/polysignal-cache")
     use_cache = _bool_env("POLYSIGNAL_USE_CACHE", True)
     clear_cache = _bool_env("POLYSIGNAL_CLEAR_CACHE", False)
@@ -144,6 +68,60 @@ async def _run_analysis(
         ttl_gamma_s=300,
         ttl_data_s=300,
     )
+
+
+def _format_cli_like(result: Dict[str, Any], top_n: int = 10) -> str:
+    if result.get("needs_selection"):
+        ev = result.get("event", {}) or {}
+        lines: List[str] = []
+        lines.append(f"EVENT: {ev.get('title') or '-'}")
+        lines.append("")
+        lines.append("Markets in this event (pick one):")
+        for m in result.get("event_markets") or []:
+            lines.append(f"  [{m.get('index')}] {m.get('question')}  (slug: {m.get('slug')})")
+        lines.append("")
+        lines.append("Re-run with market_index=<N> (or all=true).")
+        return "\n".join(lines)
+
+    market = result.get("market", {}) or {}
+    diag = result.get("diagnostics", {}) or {}
+    dist = result.get("dist") or {}
+
+    lines: List[str] = []
+    lines.append("Polysignal")
+    lines.append(f"Question: {market.get('question') or '-'}")
+    probs = market.get("market_probs") or {}
+    if probs:
+        lines.append("Market implied: " + " | ".join(f"{k}: {float(v):.2f}" for k, v in probs.items()))
+    lines.append("")
+    lines.append(f"Recommendation: {result.get('recommendation')} (confidence {float(result.get('confidence') or 0.0):.1f}/10)")
+    lines.append(f"Qualified wallets: {result.get('n_wallets_qualified', 0)} / considered: {result.get('n_wallets_considered', 0)}")
+
+    if isinstance(diag, dict) and diag.get("gate"):
+        lines.append(f"Gate: {diag.get('gate')}")
+
+    if dist:
+        lines.append("")
+        lines.append("Smart-money weighted stance:")
+        for k, v in sorted(dist.items(), key=lambda kv: kv[1], reverse=True):
+            lines.append(f"  {k}: {float(v) * 100:.2f}%")
+
+    rows = result.get("rows") or []
+    if rows:
+        lines.append("")
+        lines.append(f"Top wallets (top {min(top_n, len(rows))} by weight)")
+        lines.append("addr                               outcome  weight   mkt_value")
+        lines.append("-" * 78)
+        for r in rows[:top_n]:
+            addr = str((r or {}).get("addr", ""))[:34].ljust(34)
+            outcome = str((r or {}).get("outcome", "-"))[:7].ljust(7)
+            weight = f"{float((r or {}).get('weight', 0.0)):.4f}".rjust(7)
+            mkt_value = f"{float((r or {}).get('market_value', 0.0)):.0f}".rjust(8)
+            lines.append(f"{addr}  {outcome}  {weight}  {mkt_value}")
+
+    lines.append("")
+    lines.append("Tip: /docs for API docs. Use debug=true to see full error messages.")
+    return "\n".join(lines)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -216,14 +194,14 @@ async def home() -> str:
 
 @app.get("/api/health")
 async def health() -> Dict[str, Any]:
-    return {"ok": True, "service": "polysignal"}
+    return {"ok": True, "service": "polysignal", "rev": APP_REV}
 
 
 @app.get("/api/analyze")
 async def analyze(
-    url: str = Query(..., description="Polymarket event or market URL"),
+    url: str = Query(...),
     market_index: Optional[int] = Query(None, ge=0),
-    all: bool = Query(False, description="Analyze all markets in an event (slow)"),
+    all: bool = Query(False),
     min_profit: float = Query(5000.0, ge=0.0),
     holders_limit: int = Query(20, ge=1, le=200),
     min_balance: float = Query(0.0, ge=0.0),
@@ -240,7 +218,7 @@ async def analyze(
         return await _run_analysis(
             url=url,
             market_index=market_index,
-            all_markets=all,
+            all_markets=bool(all),
             min_profit=float(min_profit),
             holders_limit=int(holders_limit),
             min_balance=float(min_balance),
@@ -256,8 +234,7 @@ async def analyze(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        msg = str(e) if debug else "Internal error"
-        raise HTTPException(status_code=500, detail=msg) from e
+        raise HTTPException(status_code=500, detail=(str(e) if debug else "Internal error")) from e
 
 
 @app.get("/api/cli", response_class=PlainTextResponse)
@@ -281,7 +258,7 @@ async def cli(
         result = await _run_analysis(
             url=url,
             market_index=market_index,
-            all_markets=all,
+            all_markets=bool(all),
             min_profit=float(min_profit),
             holders_limit=int(holders_limit),
             min_balance=float(min_balance),
@@ -298,5 +275,4 @@ async def cli(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        msg = str(e) if debug else "Internal error"
-        raise HTTPException(status_code=500, detail=msg) from e
+        raise HTTPException(status_code=500, detail=(str(e) if debug else "Internal error")) from e
